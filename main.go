@@ -99,11 +99,17 @@ func (ix *IndexerService) run() {
 }
 
 func (ix *IndexerService) handleStart(w http.ResponseWriter, r *http.Request) {
+	if ix.started {
+		fmt.Println("Already started!")
+		return
+	}
 	go ix.run()
 }
 
 func (ix *IndexerService) handleStop(w http.ResponseWriter, r *http.Request) {
-	ix.channel <- 0
+	if ix.started {
+		ix.channel <- 0
+	}
 }
 
 func main() {
@@ -116,6 +122,6 @@ func main() {
 		http.ServeFile(w, r, "websockets.html")
 	})
 	go ix.run()
-	fmt.Println("http://localhost:8081/")
+	fmt.Println("http://localhost:8082/")
 	http.ListenAndServe(":8081", nil)
 }
