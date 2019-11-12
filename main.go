@@ -10,6 +10,28 @@ import (
 	"github.com/gorilla/websocket"
 )
 
+// IndexerState safely holds the state of the indexer
+type IndexerState struct {
+	mutex sync.Mutex
+	paused bool
+}
+
+func (s *IndexerState) setPaused(paused bool) {
+	s.mutex.Lock()
+	s.paused = paused
+	s.mutex.Unlock()
+}
+
+func (s *IndexerState) isPaused() bool {
+	s.mutex.Lock()
+	defer s.mutex.Unlock()
+	return s.paused
+}
+
+func (s *IndexerState) isRunning() bool {
+	return ! s.isPaused()
+}
+
 var upgrader = websocket.Upgrader{
 	ReadBufferSize:  1024,
 	WriteBufferSize: 1024,
@@ -17,10 +39,56 @@ var upgrader = websocket.Upgrader{
 
 // IndexerService data structure
 type IndexerService struct {
-	channel  chan int
-	started  bool
-	mutex    sync.Mutex
+	state IndexerState
 	upgrader websocket.Upgrader
+}
+
+
+
+// NewIndexer does not need comment
+func NewIndexer() *IndexerService {
+	ix := &IndexerService{
+		state:       IndexerState{paused: true},
+		upgrader: websocket.Upgrader{
+			ReadBufferSize:  1024,
+			WriteBufferSize: 1024,
+		},
+	}
+	return ix
+}
+
+func (ix *IndexerService) resume() {
+	ix.state.setPaused(false)
+}
+
+func (ix *IndexerService) pause() {
+	ix.state.setPaused(true)
+}
+
+func (ix *IndexerService) indexDoc(){
+	fmt.Println("I")
+	time.Sleep(100 * time.Millisecond)
+}
+
+func (ix *IndexerService) run() {
+	tick := time.Tick(2 * time.Second)
+	ix.state.setPaused(false)
+	for {
+		if ix.state.isRunning() {
+			ix.indexDoc()
+		}
+		<- tick
+	} // for ever
+}
+
+func (ix *IndexerService) progressBar(){
+	tick := time.Tick(200 * time.Millisecond)
+	for {
+		if ix.state.isRunning() {
+			fmt.Print(".")
+		}
+		<- tick
+	}
 }
 
 func (ix *IndexerService) handleEcho(w http.ResponseWriter, r *http.Request) {
@@ -34,13 +102,9 @@ func (ix *IndexerService) handleEcho(w http.ResponseWriter, r *http.Request) {
 
 		switch string(msg) {
 		case "quit", "stop", "pause":
-			ix.channel <- 0
-		case "start", "go", "run":
-			if !ix.started {
-				go ix.run()
-			} else {
-				fmt.Println("Already started!")
-			}
+			ix.pause()
+		case "start", "go", "run", "resume":
+			ix.resume()
 		default:
 			// Print the message to the console
 			fmt.Printf("%s sent: %s\n", conn.RemoteAddr(), string(msg))
@@ -55,73 +119,34 @@ func (ix *IndexerService) handleEcho(w http.ResponseWriter, r *http.Request) {
 
 }
 
-// NewIndexer does not need comment
-func NewIndexer() *IndexerService {
-	ix := &IndexerService{
-		channel: make(chan int),
-		started: false,
-		mutex:   sync.Mutex{},
-		upgrader: websocket.Upgrader{
-			ReadBufferSize:  1024,
-			WriteBufferSize: 1024,
-		},
-	}
-	return ix
-}
-func (ix *IndexerService) start() {
-	ix.mutex.Lock()
-	ix.started = true
-	ix.mutex.Unlock()
-}
-
-func (ix *IndexerService) stop() {
-	ix.mutex.Lock()
-	ix.started = false
-	ix.mutex.Unlock()
-}
-
-func (ix *IndexerService) run() {
-	indexing := time.Tick(2 * time.Second)
-	ix.start()
-	for {
-		select {
-		case <-indexing:
-			fmt.Println("Indexing")
-		case <-ix.channel:
-			fmt.Println("quit")
-			ix.stop()
-			return
-		default:
-			fmt.Print(".")
-			time.Sleep(100 * time.Millisecond)
-		}
-	}
-}
-
-func (ix *IndexerService) handleStart(w http.ResponseWriter, r *http.Request) {
-	if ix.started {
-		fmt.Println("Already started!")
+func (ix *IndexerService) handleResume(w http.ResponseWriter, r *http.Request) {
+	if ix.state.isRunning() {
+		fmt.Println("Already running!")
 		return
 	}
-	go ix.run()
+	ix.resume()
 }
 
-func (ix *IndexerService) handleStop(w http.ResponseWriter, r *http.Request) {
-	if ix.started {
-		ix.channel <- 0
+func (ix *IndexerService) handlePause(w http.ResponseWriter, r *http.Request) {
+	if ix.state.isPaused() {
+		fmt.Println("Already on hold!")
+		return
 	}
+	ix.pause()
 }
 
 func main() {
 	ix := NewIndexer()
 	http.HandleFunc("/echo", ix.handleEcho)
 
-	http.HandleFunc("/start", ix.handleStart)
-	http.HandleFunc("/stop", ix.handleStop)
+	http.HandleFunc("/resume", ix.handleResume)
+	http.HandleFunc("/pause", ix.handlePause)
 	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		http.ServeFile(w, r, "websockets.html")
 	})
 	go ix.run()
-	fmt.Println("http://localhost:8082/")
-	http.ListenAndServe(":8081", nil)
+	go ix.progressBar()
+	port := ":18080"
+	fmt.Sprintln("http://localhost%s/", port)
+	http.ListenAndServe(port, nil)
 }
